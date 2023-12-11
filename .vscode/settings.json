@@ -1,0 +1,51 @@
+{
+    "idf.adapterTargetName": "esp32",
+    "idf.customExtraPaths": "d:\\ESP32\\Espressif\\tools\\xtensa-esp32-elf\\esp-2021r2-patch3-8.4.0\\xtensa-esp32-elf\\bin;d:\\ESP32\\Espressif\\tools\\xtensa-esp32s2-elf\\esp-2021r2-patch3-8.4.0\\xtensa-esp32s2-elf\\bin;d:\\ESP32\\Espressif\\tools\\xtensa-esp32s3-elf\\esp-2021r2-patch3-8.4.0\\xtensa-esp32s3-elf\\bin;d:\\ESP32\\Espressif\\tools\\riscv32-esp-elf\\esp-2021r2-patch3-8.4.0\\riscv32-esp-elf\\bin;d:\\ESP32\\Espressif\\tools\\esp32ulp-elf\\2.28.51-esp-20191205\\esp32ulp-elf-binutils\\bin;d:\\ESP32\\Espressif\\tools\\esp32s2ulp-elf\\2.28.51-esp-20191205\\esp32s2ulp-elf-binutils\\bin;d:\\ESP32\\Espressif\\tools\\cmake\\3.16.4\\bin;d:\\ESP32\\Espressif\\tools\\openocd-esp32\\v0.11.0-esp32-20220706\\openocd-esp32\\bin;d:\\ESP32\\Espressif\\tools\\ninja\\1.10.2;d:\\ESP32\\Espressif\\tools\\idf-exe\\1.0.1;d:\\ESP32\\Espressif\\tools\\ccache\\3.7;d:\\ESP32\\Espressif\\tools\\dfu-util\\0.9\\dfu-util-0.9-win64",
+    "idf.customExtraVars": {
+        "OPENOCD_SCRIPTS": "C:\\Espressif\\tools\\openocd-esp32\\v0.11.0-esp32-20211220/openocd-esp32/share/openocd/scripts",
+        "IDF_CCACHE_ENABLE": "1"
+    },
+    "idf.espIdfPathWin": "d:\\ESP32\\esp-idf",
+    "idf.openOcdConfigs": [
+        "interface/ftdi/esp32_devkitj_v1.cfg",
+        "target/esp32s3.cfg"
+    ],
+    "idf.pythonBinPathWin": "d:\\ESP32\\Espressif\\python_env\\idf4.3_py3.8_env\\Scripts\\python.exe",
+    "idf.toolsPathWin": "d:\\ESP32\\Espressif",
+    "files.associations": {
+        "ip_addr.h": "c",
+        "ethernet_connect.h": "c",
+        "*.inc": "c",
+        "mqtt_client.h": "c",
+        "wifi_connect.h": "c",
+        "stdio.h": "c",
+        "spi_master.h": "c",
+        "open62541.h": "c",
+        "mqtt_connect.h": "c",
+        "task.h": "c",
+        "esp_netif.h": "c",
+        "freertos.h": "c",
+        "optional": "c",
+        "istream": "c",
+        "ostream": "c",
+        "ratio": "c",
+        "system_error": "c",
+        "array": "c",
+        "functional": "c",
+        "tuple": "c",
+        "type_traits": "c",
+        "utility": "c",
+        "lorasx1278.h": "c",
+        "opcua.h": "c",
+        "esp_log.h": "c",
+        "sdspi_host.h": "c",
+        "esp_event.h": "c",
+        "sdmmc_host.h": "c",
+        "random": "c",
+        "esp_crc.h": "c",
+        "input.h": "c",
+        "string": "c",
+        "string_view": "c"
+    },
+    "idf.flashType": "JTAG"
+}
