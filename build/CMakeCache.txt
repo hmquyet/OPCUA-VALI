@@ -245,7 +245,7 @@ ENABLE_ZLIB_SUPPORT:BOOL=OFF
 ESP_PLATFORM:UNINITIALIZED=1
 
 //Git command line client
-GIT_EXECUTABLE:FILEPATH=D:/AUTOMATION/ESP32/tools/idf-git/2.39.2/cmd/git.exe
+GIT_EXECUTABLE:FILEPATH=D:/ESP32/Espressif/tools/idf-git/2.39.2/cmd/git.exe
 
 //IDF Build Target
 IDF_TARGET:STRING=esp32
@@ -676,7 +676,7 @@ CMAKE_VERBOSE_MAKEFILE-ADVANCED:INTERNAL=1
 //Test C_COMPILER_SUPPORTS_WFORMAT_SIGNEDNESS
 C_COMPILER_SUPPORTS_WFORMAT_SIGNEDNESS:INTERNAL=1
 //Details about finding Git
-FIND_PACKAGE_MESSAGE_DETAILS_Git:INTERNAL=[D:/AUTOMATION/ESP32/tools/idf-git/2.39.2/cmd/git.exe][v2.39.2.windows.1()]
+FIND_PACKAGE_MESSAGE_DETAILS_Git:INTERNAL=[D:/ESP32/Espressif/tools/idf-git/2.39.2/cmd/git.exe][v2.39.2.windows.1()]
 //Details about finding Python3
 FIND_PACKAGE_MESSAGE_DETAILS_Python3:INTERNAL=[D:/ESP32/Espressif/python_env/idf4.3_py3.8_env/Scripts/python.exe][cfound components: Interpreter ][v3.8.7()]
 //ADVANCED property for variable: GIT_EXECUTABLE

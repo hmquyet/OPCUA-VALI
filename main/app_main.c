@@ -15,9 +15,11 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
-#include "freertos/task.h"
+
 #include "freertos/semphr.h"
 #include "freertos/timers.h"
+
+#include "freertos/event_groups.h"
 #include "esp_task_wdt.h"
 
 #include "driver/gpio.h"
@@ -37,26 +39,29 @@
 #include "sdmmc_cmd.h"
 #include "driver/sdmmc_defs.h"
 #include "sdmmc_cmd.h"
-
+#include "esp_timer.h"
 #include "esp_log.h"
 #include "mqtt_client.h"
-
 #include "open62541.h"
-
-#include "wifi_connect.h"
-#include "mqtt_connect.h"
 #include "ethernet_connect.h"
-#include "input.h"
-#include "opcua.h"
+#include "ds3231.h"
+
+static const char *TAGWIFI = "WIFI_ESP";
+int retry_cnt = 0;
+static const char *TAGMQTT = "MQTT_ESP";
+
+char topic_Sub[12];
+char data_Sub[12];
+i2c_dev_t rtc_i2c;
+#include "tcpip_adapter.h"
 
 const char *RECONNECT_BROKER_TIMER = "RECONNECT_BROKER_TIMER";
 static const char *TAG = "TEST_ESP";
 
 static char DATA_FILE[50] = "/sdcard/dataopc.txt";
 
-TimerHandle_t soft_timer_handle_1;
 static char *received_data;
-void write_to_sd(char content[], char file_path[]);
+
 /*----------------------------------------------------------------------*/
 /**
  * @brief Write content to file in SD card in append+ mode
@@ -70,60 +75,40 @@ void write_to_sd(char content[], char file_path[]);
 #define PIN_NUM_CLK 18
 #define PIN_NUM_CS 5
 #define MOUNT_POINT "/sdcard"
- double injection_time = 0;
- double injection_cycle = 0;
-  char message_mqtt[1000];
+double injection_time = 0;
+double injection_cycle = 0;
+char message_mqtt[1000];
 static bool error_sd_card;
 const char *MACHINE_STATUS_TOPIC = "IMM/I2/Metric/MachineStatus";
 const char *INJECTION_CYCLE_TOPIC = "IMM/I2/Metric/InjectionCycle";
 const char *INJECTION_TIME_TOPIC = "IMM/I2/Metric/InjectionTime";
-static void event_input_gpio(void *arg)
-{
-    uint32_t io_num;
-    for (;;)
-    {
-        if (xQueueReceive(gpio_evt_queue, &io_num, portMAX_DELAY))
-        {
-            vTaskDelay(50);
-            if (gpio_get_level(33) == 0)
-            {
-                timer_set_counter_value(TIMER_GROUP_0, TIMER_0, 0x00000000ULL); // Set cho timer ve gia tri 0
-                timer_start(TIMER_GROUP_0, TIMER_0);
-            }
-            else if (gpio_get_level(33) == 1)
-            {
-                timer_pause(TIMER_GROUP_0, TIMER_0); // Dung timer dem thoi gian chu ky
-        timer_get_counter_time_sec(TIMER_GROUP_0, TIMER_0, &injection_time);
-        sprintf(message_mqtt, "[{%cname%c: %cinjectionTime%c,%cvalue%c: %f,%ctimestamp%c: %c%04d-%02d-%02dT%02d:%02d:%02d%c}]",
-                34, 34, 34, 34, 34, 34, injection_time, 34, 34, 34, 23,9, 00, 0, 0, 0, 34);
-      
-         esp_mqtt_client_publish(mqttclient, MACHINE_STATUS_TOPIC, message_mqtt, 0, 1, 1);
-            }
-        //     if (gpio_get_level(32) == 0)
-        //     {
-        //         timer_set_counter_value(TIMER_GROUP_0, TIMER_0, 0x00000000ULL); // Set cho timer ve gia tri 0
-        //         timer_start(TIMER_GROUP_0, TIMER_0);
-        //     }
-        //     else if (gpio_get_level(32) == 1)
-        //     {
-        //         timer_pause(TIMER_GROUP_0, TIMER_0); // Dung timer dem thoi gian chu ky
-        // timer_get_counter_time_sec(TIMER_GROUP_0, TIMER_0, &injection_cycle);
-        // sprintf(message_mqtt, "[{%cname%c: %cinjectionCycle%c,%cvalue%c: %f,%ctimestamp%c: %c%04d-%02d-%02dT%02d:%02d:%02d%c}]",
-        //         34, 34, 34, 34, 34, 34, injection_time, 34, 34, 34, 23,9, 00, 0, 0, 0, 34);
-      
-        //  esp_mqtt_client_publish(mqttclient, MACHINE_STATUS_TOPIC, message_mqtt, 0, 1, 1);
-        //     }
-        }
-    }
-}
 
-void lora_task(void *pvParameter)
+int MQTT_CONNECTED;
+static esp_mqtt_client_handle_t mqttclient;
+void mqtt_app_start(void);
+static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_t event_id, void *event_data);
+
+#define MAX_RETRY 10
+#define EXAMPLE_ESP_WIFI_SSID "IPHONE1"  // PDA_CHA_NhaDuoi
+#define EXAMPLE_ESP_WIFI_PASS "12345679" // Tiaportal
+
+int reconnect_time;
+bool boot_to_reconnect;
+TimerHandle_t soft_timer_handle_1;
+TimerHandle_t soft_timer_handle_7;
+
+struct tm local_time;
+
+int WIFI_CONNECTED;
+void wifi_init(void);
+esp_err_t wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data);
+
+static void vSoftTimerCallback(TimerHandle_t xTimer);
+
+static bool IRAM_ATTR timer_group_isr_callback(void *args)
 {
-    
-        char data[100];
-        lora_reciever_uart(data);
-        
-    
+    BaseType_t high_task_awoken = pdFALSE;
+    return high_task_awoken == pdTRUE; // return whether we need to yield at the end of ISR
 }
 
 static void vSoftTimerCallback(TimerHandle_t xTimer)
@@ -152,203 +137,348 @@ static void opcua_task(void *pvParameter)
     {
         while (1)
         {
-            // LIST NODE ID
-            UA_NodeId nodeIds[1];
-            nodeIds[0] = UA_NODEID_NUMERIC(4, 9);
-            // nodeIds[1] = UA_NODEID_NUMERIC(4, 10);
-            // nodeIds[2] = UA_NODEID_NUMERIC(4, 8);
-            // nodeIds[3] = UA_NODEID_NUMERIC(4, 15);
-            // nodeIds[4] = UA_NODEID_NUMERIC(4, 7);
-            // nodeIds[5] = UA_NODEID_NUMERIC(4, 16);
-            // nodeIds[6] = UA_NODEID_NUMERIC(4, 14);
-
-            for (int i = 0; i < 1; i++)
+            if (ETHERNET_CONNECTED ==1)
             {
-                // Đọc tên biến của NodeId
-                UA_ReadRequest readNameRequest;
-                UA_ReadRequest_init(&readNameRequest);
-                readNameRequest.nodesToRead = UA_ReadValueId_new();
-                readNameRequest.nodesToReadSize = 1;
-                readNameRequest.nodesToRead[0].nodeId = nodeIds[i];
-                readNameRequest.nodesToRead[0].attributeId = UA_ATTRIBUTEID_DISPLAYNAME;
 
-                UA_ReadResponse readNameResponse = UA_Client_Service_read(opcua_client, readNameRequest);
+                // LIST NODE ID
+                UA_NodeId nodeIds[10];
 
-                if (readNameResponse.responseHeader.serviceResult == UA_STATUSCODE_GOOD)
+                nodeIds[0] = UA_NODEID_NUMERIC(4, 9);  // tmChargeTime
+                nodeIds[1] = UA_NODEID_NUMERIC(4, 10); // tmClpClsTime
+                nodeIds[2] = UA_NODEID_NUMERIC(4, 8);  // tmClpOpnTime
+                nodeIds[3] = UA_NODEID_NUMERIC(4, 15); // tmCoolingTime
+                nodeIds[4] = UA_NODEID_NUMERIC(4, 7);  // tmInjTime
+                nodeIds[5] = UA_NODEID_NUMERIC(4, 16); //  Injection Peak Pressure
+                nodeIds[6] = UA_NODEID_NUMERIC(4, 14); // cycleTime
+                nodeIds[7] = UA_NODEID_NUMERIC(4, 12); // counterShot
+                nodeIds[8] = UA_NODEID_NUMERIC(4, 11); // Nozzle Temp
+                nodeIds[9] = UA_NODEID_NUMERIC(4, 13); // Switch Over Pos
+
+                for (int i = 0; i < 10; i++)
                 {
-                    // Đọc tên biến displayName
-                    UA_Variant *browseNameValue = &(readNameResponse.results[0].value);
+                    // Đọc tên biến của NodeId
+                    UA_ReadRequest readNameRequest;
+                    UA_ReadRequest_init(&readNameRequest);
+                    readNameRequest.nodesToRead = UA_ReadValueId_new();
+                    readNameRequest.nodesToReadSize = 1;
+                    readNameRequest.nodesToRead[0].nodeId = nodeIds[i];
+                    readNameRequest.nodesToRead[0].attributeId = UA_ATTRIBUTEID_DISPLAYNAME;
 
-                    if (UA_Variant_hasScalarType(browseNameValue, &UA_TYPES[UA_TYPES_LOCALIZEDTEXT]))
+                    UA_ReadResponse readNameResponse = UA_Client_Service_read(opcua_client, readNameRequest);
+
+                    if (readNameResponse.responseHeader.serviceResult == UA_STATUSCODE_GOOD)
                     {
-                        UA_LocalizedText *localizedText = (UA_LocalizedText *)browseNameValue->data;
+                        // Đọc tên biến displayName
+                        UA_Variant *browseNameValue = &(readNameResponse.results[0].value);
 
-                        char *nodeName = (char *)UA_malloc((int)localizedText->text.length + 1);
-                        memcpy(nodeName, localizedText->text.data, (int)localizedText->text.length);
-                        nodeName[(int)localizedText->text.length] = '\0';
-
-                        UA_ReadRequest readRequest;
-                        UA_ReadRequest_init(&readRequest);
-                        readRequest.nodesToRead = UA_ReadValueId_new();
-                        readRequest.nodesToReadSize = 1;
-                        readRequest.nodesToRead[0].nodeId = nodeIds[i];
-                        readRequest.nodesToRead[0].attributeId = UA_ATTRIBUTEID_VALUE;
-                        UA_ReadResponse readResponse = UA_Client_Service_read(opcua_client, readRequest);
-
-                        if (readResponse.responseHeader.serviceResult == UA_STATUSCODE_GOOD)
+                        if (UA_Variant_hasScalarType(browseNameValue, &UA_TYPES[UA_TYPES_LOCALIZEDTEXT]))
                         {
+                            UA_LocalizedText *localizedText = (UA_LocalizedText *)browseNameValue->data;
 
-                            // ĐỌc giá trị biến
-                            UA_Variant *value = &(readResponse.results[0].value);
+                            char *nodeName = (char *)UA_malloc((int)localizedText->text.length + 1);
+                            memcpy(nodeName, localizedText->text.data, (int)localizedText->text.length);
+                            nodeName[(int)localizedText->text.length] = '\0';
 
-                            if (UA_Variant_hasScalarType(value, &UA_TYPES[UA_TYPES_FLOAT]))
-                            {
-                                float floatValue = *(float *)value->data;
+                            UA_ReadRequest readRequest;
+                            UA_ReadRequest_init(&readRequest);
+                            readRequest.nodesToRead = UA_ReadValueId_new();
+                            readRequest.nodesToReadSize = 1;
+                            readRequest.nodesToRead[0].nodeId = nodeIds[i];
+                            readRequest.nodesToRead[0].attributeId = UA_ATTRIBUTEID_VALUE;
+                            UA_ReadResponse readResponse = UA_Client_Service_read(opcua_client, readRequest);
 
-                                char data_receiver_opcua[100];
-                                snprintf(data_receiver_opcua, sizeof(data_receiver_opcua), "{\"name\":\"%s\",\"value\":%.2f,\"timestamp\":\"\"}\n", nodeName, floatValue);
-                                printf(data_receiver_opcua);
-                                //  write_to_sd(data_receiver_opcua,DATA_FILE);
-                                // esp_mqtt_client_publish(mqttclient, "test/dataUart", data_receiver_opcua, 0, 0, 0);
-                            }
-
-                            else if (UA_Variant_hasScalarType(value, &UA_TYPES[UA_TYPES_DOUBLE]))
-                            {
-                                float doubleValue = *(float *)value->data;
-
-                                char data_receiver_opcua[100];
-                                snprintf(data_receiver_opcua, sizeof(data_receiver_opcua), "{\"name\":\"%s\",\"value\":%.2f,\"timestamp\":\"\"}\n", nodeName, doubleValue);
-                                printf(data_receiver_opcua);
-                                //  write_to_sd(data_receiver_opcua,DATA_FILE);
-                                // esp_mqtt_client_publish(mqttclient, "test/dataUart", data_receiver_opcua, 0, 0, 0);
-                            }
-
-                            else if (UA_Variant_hasScalarType(value, &UA_TYPES[UA_TYPES_UINT16]))
+                            if (readResponse.responseHeader.serviceResult == UA_STATUSCODE_GOOD)
                             {
 
-                                char data_receiver_opcua[100];
-                                u_int16_t intValue = *(u_int16_t *)value->data;
+                                // ĐỌc giá trị biến
+                                UA_Variant *value = &(readResponse.results[0].value);
 
-                                snprintf(data_receiver_opcua, sizeof(data_receiver_opcua), "{\"name\":\"%s\",\"value\":%u,\"timestamp\":\"\"}\n", nodeName, intValue);
-                                printf(data_receiver_opcua);
-                                // write_to_sd(data_receiver_opcua,DATA_FILE);
-                                // esp_mqtt_client_publish(mqttclient, "test/dataUart", data_receiver_opcua, 0, 0, 0);
-                            }
-                            else if (UA_Variant_hasScalarType(value, &UA_TYPES[UA_TYPES_BOOLEAN]))
-                            {
-                                char data_receiver_opcua[100];
-                                UA_Boolean booleanValue = *(UA_Boolean *)value->data;
+                                if (UA_Variant_hasScalarType(value, &UA_TYPES[UA_TYPES_FLOAT]))
+                                {
+                                    float floatValue = *(float *)value->data;
 
-                                snprintf(data_receiver_opcua, sizeof(data_receiver_opcua), "{\"name\":\"%s\",\"value\":%d,\"timestamp\":\"\"}\n", nodeName, booleanValue);
+                                    char data_receiver_opcua[100];
+                                    ds3231_get_time(&rtc_i2c, &local_time);
+                                    snprintf(data_receiver_opcua, sizeof(data_receiver_opcua), "{\"name\":\"%s\",\"value\":%f,\"timestamp\":\"20%04d-%02d-%02d %02d:%02d:%02d\"}",
+                                             nodeName, floatValue, local_time.tm_year, local_time.tm_mon, local_time.tm_mday, local_time.tm_hour, local_time.tm_min, local_time.tm_sec);
+                                    printf(data_receiver_opcua);
+                                    switch (i)
+                                    {
+                                    case 0:
+                                        esp_mqtt_client_publish(mqttclient, "HAITHIEN/I1/Metric/tmChargeTime", data_receiver_opcua, 0, 0, 1);
+                                        break;
+                                    case 1:
+                                        esp_mqtt_client_publish(mqttclient, "HAITHIEN/I1/Metric/tmClpClsTime", data_receiver_opcua, 0, 0, 1);
+                                        break;
+                                    case 2:
+                                        esp_mqtt_client_publish(mqttclient, "HAITHIEN/I1/Metric/tmClpOpnTime", data_receiver_opcua, 0, 0, 1);
+                                        break;
+                                    case 3:
+                                        esp_mqtt_client_publish(mqttclient, "HAITHIEN/I1/Metric/tmCoolingTime", data_receiver_opcua, 0, 0, 1);
+                                        break;
+                                    case 4:
+                                        esp_mqtt_client_publish(mqttclient, "HAITHIEN/I1/Metric/tmInjTime", data_receiver_opcua, 0, 0, 1);
+                                        break;
+                                    case 5:
+                                        esp_mqtt_client_publish(mqttclient, "HAITHIEN/I1/Metric/InjectionPeakPressure", data_receiver_opcua, 0, 0, 1);
+                                        break;
+                                    case 6:
+                                        esp_mqtt_client_publish(mqttclient, "HAITHIEN/I1/Metric/cycleTime", data_receiver_opcua, 0, 0, 1);
+                                        break;
+                                    case 7:
+                                        esp_mqtt_client_publish(mqttclient, "HAITHIEN/I1/Metric/counterShot", data_receiver_opcua, 0, 0, 1);
+                                        break;
+                                    case 8:
+                                        esp_mqtt_client_publish(mqttclient, "HAITHIEN/I1/Metric/NozzleTemp", data_receiver_opcua, 0, 0, 1);
+                                        break;
+                                    case 9:
+                                        esp_mqtt_client_publish(mqttclient, "HAITHIEN/I1/Metric/SwitchOverPos", data_receiver_opcua, 0, 0, 1);
+                                        break;
+                                    default:
+                                        break;
+                                    }
+                                }
 
-                                printf(data_receiver_opcua);
-                                // write_to_sd(data_receiver_opcua,DATA_FILE);
-                                //  esp_mqtt_client_publish(mqttclient, "test/dataUart", data_receiver_opcua, 0, 0, 0);
+                                else if (UA_Variant_hasScalarType(value, &UA_TYPES[UA_TYPES_DOUBLE]))
+                                {
+                                    float doubleValue = *(float *)value->data;
+
+                                    char data_receiver_opcua[100];
+                                    ds3231_get_time(&rtc_i2c, &local_time);
+                                    snprintf(data_receiver_opcua, sizeof(data_receiver_opcua), "{\"name\":\"%s\",\"value\":%f,\"timestamp\":\"20%04d-%02d-%02d %02d:%02d:%02d\"}",
+                                             nodeName, doubleValue, local_time.tm_year, local_time.tm_mon, local_time.tm_mday, local_time.tm_hour, local_time.tm_min, local_time.tm_sec);
+                                    printf(data_receiver_opcua);
+
+                                    switch (i)
+                                    {
+                                    case 0:
+                                        esp_mqtt_client_publish(mqttclient, "HAITHIEN/I1/Metric/tmChargeTime", data_receiver_opcua, 0, 0, 1);
+                                        break;
+                                    case 1:
+                                        esp_mqtt_client_publish(mqttclient, "HAITHIEN/I1/Metric/tmClpClsTime", data_receiver_opcua, 0, 0, 1);
+                                        break;
+                                    case 2:
+                                        esp_mqtt_client_publish(mqttclient, "HAITHIEN/I1/Metric/tmClpOpnTime", data_receiver_opcua, 0, 0, 1);
+                                        break;
+                                    case 3:
+                                        esp_mqtt_client_publish(mqttclient, "HAITHIEN/I1/Metric/tmCoolingTime", data_receiver_opcua, 0, 0, 1);
+                                        break;
+                                    case 4:
+                                        esp_mqtt_client_publish(mqttclient, "HAITHIEN/I1/Metric/tmInjTime", data_receiver_opcua, 0, 0, 1);
+                                        break;
+                                    case 5:
+                                        esp_mqtt_client_publish(mqttclient, "HAITHIEN/I1/Metric/InjectionPeakPressure", data_receiver_opcua, 0, 0, 1);
+                                        break;
+                                    case 6:
+                                        esp_mqtt_client_publish(mqttclient, "HAITHIEN/I1/Metric/cycleTime", data_receiver_opcua, 0, 0, 1);
+                                        break;
+                                    case 7:
+                                        esp_mqtt_client_publish(mqttclient, "HAITHIEN/I1/Metric/counterShot", data_receiver_opcua, 0, 0, 1);
+                                        break;
+                                    case 8:
+                                        esp_mqtt_client_publish(mqttclient, "HAITHIEN/I1/Metric/NozzleTemp", data_receiver_opcua, 0, 0, 1);
+                                        break;
+                                    case 9:
+                                        esp_mqtt_client_publish(mqttclient, "HAITHIEN/I1/Metric/SwitchOverPos", data_receiver_opcua, 0, 0, 1);
+                                        break;
+                                    default:
+                                        break;
+                                    }
+                                }
+
+                                else if (UA_Variant_hasScalarType(value, &UA_TYPES[UA_TYPES_UINT16]))
+                                {
+
+                                    char data_receiver_opcua[100];
+                                    u_int16_t intValue = *(u_int16_t *)value->data;
+                                    ds3231_get_time(&rtc_i2c, &local_time);
+
+                                    snprintf(data_receiver_opcua, sizeof(data_receiver_opcua), "{\"name\":\"%s\",\"value\":%d,\"timestamp\":\"20%04d-%02d-%02d %02d:%02d:%02d\"}",
+                                             nodeName, intValue, local_time.tm_year, local_time.tm_mon, local_time.tm_mday, local_time.tm_hour, local_time.tm_min, local_time.tm_sec);
+                                    printf(data_receiver_opcua);
+
+                                    switch (i)
+                                    {
+                                    case 0:
+                                        esp_mqtt_client_publish(mqttclient, "HAITHIEN/I1/Metric/tmChargeTime", data_receiver_opcua, 0, 0, 1);
+                                        break;
+                                    case 1:
+                                        esp_mqtt_client_publish(mqttclient, "HAITHIEN/I1/Metric/tmClpClsTime", data_receiver_opcua, 0, 0, 1);
+                                        break;
+                                    case 2:
+                                        esp_mqtt_client_publish(mqttclient, "HAITHIEN/I1/Metric/tmClpOpnTime", data_receiver_opcua, 0, 0, 1);
+                                        break;
+                                    case 3:
+                                        esp_mqtt_client_publish(mqttclient, "HAITHIEN/I1/Metric/tmCoolingTime", data_receiver_opcua, 0, 0, 1);
+                                        break;
+                                    case 4:
+                                        esp_mqtt_client_publish(mqttclient, "HAITHIEN/I1/Metric/tmInjTime", data_receiver_opcua, 0, 0, 1);
+                                        break;
+                                    case 5:
+                                        esp_mqtt_client_publish(mqttclient, "HAITHIEN/I1/Metric/InjectionPeakPressure", data_receiver_opcua, 0, 0, 1);
+                                        break;
+                                    case 6:
+                                        esp_mqtt_client_publish(mqttclient, "HAITHIEN/I1/Metric/cycleTime", data_receiver_opcua, 0, 0, 1);
+                                        break;
+                                    case 7:
+                                        esp_mqtt_client_publish(mqttclient, "HAITHIEN/I1/Metric/counterShot", data_receiver_opcua, 0, 0, 1);
+                                        break;
+                                    case 8:
+                                        esp_mqtt_client_publish(mqttclient, "HAITHIEN/I1/Metric/NozzleTemp", data_receiver_opcua, 0, 0, 1);
+                                        break;
+                                    case 9:
+                                        esp_mqtt_client_publish(mqttclient, "HAITHIEN/I1/Metric/SwitchOverPos", data_receiver_opcua, 0, 0, 1);
+                                        break;
+                                    default:
+                                        break;
+                                    }
+                                }
+
+                                else
+                                {
+                                    printf("Unsupported data type for Node %d\n", i + 1);
+                                }
+                                UA_ReadResponse_deleteMembers(&readResponse);
                             }
-                            else
-                            {
-                                printf("Unsupported data type for Node %d\n", i + 1);
-                            }
-                            UA_ReadResponse_deleteMembers(&readResponse);
                         }
+                        UA_ReadResponse_deleteMembers(&readNameResponse);
                     }
-                    UA_ReadResponse_deleteMembers(&readNameResponse);
                 }
+                printf("\n\n");
+                vTaskDelay(500 / portTICK_PERIOD_MS);
             }
-            printf("\n\n");
-            vTaskDelay(500 / portTICK_PERIOD_MS);
         }
     }
 }
 
-// void write_to_sd(char content[], char file_path[])
-// {
-//     FILE *f = fopen(file_path, "a+");
-//     if (f == NULL)
-//     {
-//         ESP_LOGE(TAG, "Failed to open file for writing --> Restart ESP");
-//         esp_restart();
-//         return;
-//     }
-//     int i = 0;
-//     while (content[i] != NULL)
-//         i++;
+void wifi_init(void)
+{
 
-//     char buff[i + 1];
-//     for (int j = 0; j < i + 1; j++)
-//     {
-//         buff[j] = content[j];
-//     }
-//     fprintf(f, buff);
-//     fprintf(f, "\n");
-//     fclose(f);
-//     ESP_LOGI(TAG, "File written");
-// }
-// static void sdcard_mount()
-// {
-//     /*sd_card part code*/
-//     esp_vfs_fat_sdmmc_mount_config_t mount_config =
-//         {
-//             .format_if_mount_failed = true,
-//             .max_files = 5,
-//             .allocation_unit_size = 16 * 1024};
-//     sdmmc_card_t *card;
+    esp_event_loop_create_default();
+    ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler, NULL));
+    ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &wifi_event_handler, NULL));
 
-//     const char mount_point[] = MOUNT_POINT;
-//     ESP_LOGI(TAG, "Initializing SD card");
+    wifi_config_t wifi_config = {
+        .sta = {
+            .ssid = EXAMPLE_ESP_WIFI_SSID,
+            .password = EXAMPLE_ESP_WIFI_PASS,
+            .threshold.authmode = WIFI_AUTH_WPA2_PSK},
+    };
 
-//     ESP_LOGI(TAG, "Using SPI peripheral");
+    esp_netif_init();
+    esp_netif_create_default_wifi_sta();
+    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+    esp_wifi_init(&cfg);
+    esp_wifi_set_mode(WIFI_MODE_STA);
+    esp_wifi_set_config(ESP_IF_WIFI_STA, &wifi_config);
+    esp_wifi_start();
+}
 
-//     sdmmc_host_t host = SDSPI_HOST_DEFAULT();
-//     spi_bus_config_t bus_cfg = {
-//         .mosi_io_num = 23,
-//         .miso_io_num = 19,
-//         .sclk_io_num = 18,
-//         .quadwp_io_num = -1,
-//         .quadhd_io_num = -1,
-//         .max_transfer_sz = 4000,
-//     };
+esp_err_t wifi_event_handler(void *arg, esp_event_base_t event_base,
+                             int32_t event_id, void *event_data)
+{
+    switch (event_id)
+    {
+    case WIFI_EVENT_STA_START:
+        esp_wifi_connect();
+        ESP_LOGI(TAGWIFI, " to Tryingconnect with Wi-Fi\n");
+        break;
 
-//     esp_err_t ret = spi_bus_initialize(host.slot, &bus_cfg, 1);
-//     if (ret != ESP_OK)
-//     {
-//         ESP_LOGE(TAG, "Failed to initialize bus.");
-//     }
+    case WIFI_EVENT_STA_CONNECTED:
+        WIFI_CONNECTED = 1;
+        ESP_LOGI(TAGWIFI, "Wi-Fi connected\n");
+        ESP_LOGI(TAGWIFI, " Connect to SSID:%s, password:%s",
+                 EXAMPLE_ESP_WIFI_SSID, EXAMPLE_ESP_WIFI_PASS);
 
-//     // This initializes the slot without card detect (CD) and write protect (WP) signals.
-//     // Modify slot_config.gpio_cd and slot_config.gpio_wp if your board has these signals.
-//     sdspi_device_config_t slot_config = SDSPI_DEVICE_CONFIG_DEFAULT();
-//     slot_config.gpio_cs = 14;
-//     slot_config.host_id = host.slot;
-//     esp_err_t err = esp_vfs_fat_sdspi_mount(mount_point, &host, &slot_config, &mount_config, &card);
-// }
+        break;
+
+    case IP_EVENT_STA_GOT_IP:
+        ESP_LOGI(TAGWIFI, "got ip: starting MQTT Client\n");
+
+        break;
+
+    case WIFI_EVENT_STA_DISCONNECTED:
+        WIFI_CONNECTED = 0;
+        ESP_LOGI(TAGWIFI, "wifi disconnected: Retrying Wi-Fi\n");
+        if (retry_cnt++ < MAX_RETRY)
+        {
+            esp_wifi_connect();
+        }
+        else
+            ESP_LOGI(TAGWIFI, "Max Retry Failed: Wi-Fi Connection\n");
+        break;
+
+    default:
+        break;
+    }
+    return ESP_OK;
+}
+
+// int SW_STATE;
+static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_t event_id, void *event_data)
+{
+    ESP_LOGD(TAGMQTT, "Event dispatched from event loop base=%s, event_id=%d", base, event_id);
+    esp_mqtt_event_handle_t event = event_data;
+    esp_mqtt_client_handle_t client = event->client;
+
+    int msg_id;
+    switch ((esp_mqtt_event_id_t)event_id)
+    {
+    case WIFI_EVENT_STA_START:
+        esp_wifi_connect();
+        reconnect_time = 0;
+        ESP_LOGI(TAGWIFI, "Trying to connect with Wi-Fi\n");
+        break;
+
+    case MQTT_EVENT_CONNECTED:
+        ESP_LOGI(TAGMQTT, "MQTT_EVENT_CONNECTED");
+        boot_to_reconnect = false;
+        xTimerStop(soft_timer_handle_7, 10);
+
+        break;
+    case MQTT_EVENT_SUBSCRIBED:
+        break;
+
+    case MQTT_EVENT_ERROR:
+        ESP_LOGI(TAGMQTT, "MQTT_EVENT_ERROR");
+        break;
+
+    case MQTT_EVENT_DATA:
+        sprintf(topic_Sub, "%.*s\r\n", event->topic_len, event->topic);
+        sprintf(data_Sub, "%.*s\r\n", event->data_len, event->data);
+        ESP_LOGI(TAGMQTT, "MQTT_EVENT_DATA");
+        // printf("Topic: %s\n", topic_Sub);
+        // printf("Data: %s\n", data_Sub);
+        break;
+
+    default:
+        ESP_LOGI(TAGMQTT, "Other event id:%d", event->event_id);
+        break;
+    }
+}
+
+void mqtt_app_start(void)
+{
+
+    ESP_LOGI(TAGMQTT, "STARTING MQTT");
+    esp_mqtt_client_config_t mqttConfig = {
+        .uri = "mqtt://40.82.154.13:1883"};
+
+    mqttclient = esp_mqtt_client_init(&mqttConfig);
+    esp_mqtt_client_register_event(mqttclient, ESP_EVENT_ANY_ID, mqtt_event_handler, mqttclient);
+    esp_mqtt_client_start(mqttclient);
+}
 
 void app_main(void)
 {
 
-    // sdcard_mount();
+    esp_err_t err = nvs_flash_init();
+    soft_timer_handle_7 = xTimerCreate("BOOT_CONNECT_TIMER", pdMS_TO_TICKS(5000), false, (void *)7, &vSoftTimerCallback); // Timer Reboot to connect
 
-     //input_io_config();
+    wifi_init();
+    mqtt_app_start();
+    start_connect_ethernet();
 
-     
-    lora_uart_config();
-    nvs_flash_init();
-
-    // if(MQTT_CONNECTED==0){
-    //        soft_timer_handle_1 = xTimerCreate(RECONNECT_BROKER_TIMER,pdMS_TO_TICKS(10000),false,(void *)1, &vSoftTimerCallback);
-    // }
-
-    //start_connect_ethernet();
-
-   // vTaskDelay(3000 / portTICK_PERIOD_MS);
-    // wifi_init();
-     //mqtt_app_start();
-
-    //xTaskCreate(event_input_gpio, "event_input_gpio", 2048, NULL, 1, NULL);
-    // xTaskCreate(uart_event_task, "uart_event_task", 4096, NULL, 2, NULL);
-     xTaskCreate(lora_task, "lora_task", 4096, NULL, 4, NULL);
-
-    // xTaskCreate(&opcua_task, "opcua_task", 4096, NULL, 5, NULL);
-
+    xTaskCreate(&opcua_task, "opcua_task", 4096, NULL, 5, NULL);
     // xTaskCreatePinnedToCore(opcua_task, "opcua_task", 2048 * 4, NULL, 10, NULL, 0); // Core0
 }

@@ -45,7 +45,11 @@
         "esp_crc.h": "c",
         "input.h": "c",
         "string": "c",
-        "string_view": "c"
+        "string_view": "c",
+        "wifi_mqtt.h": "c",
+        "semphr.h": "c",
+        "sockets.h": "c",
+        "err.h": "c"
     },
     "idf.flashType": "JTAG"
 }

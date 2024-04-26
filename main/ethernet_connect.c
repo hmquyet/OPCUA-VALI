@@ -1,20 +1,6 @@
 
-#include <stdio.h>
-#include <string.h>
-#include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
-#include "esp_netif.h"
-#include "esp_eth.h"
-#include "esp_event.h"
-#include "esp_log.h"
-#include "driver/gpio.h"
-#include "sdkconfig.h"
-#include "lwip/inet.h"
 
-#include "driver/spi_master.h"
 #include "ethernet_connect.h"
-
-
 
 static const char *TAG = "ETHERNET_ESP";
 
@@ -39,6 +25,10 @@ static void eth_event_handler(void *arg, esp_event_base_t event_base,
     case ETHERNET_EVENT_DISCONNECTED:
         ESP_LOGI(TAG, "Ethernet Link Down");
         ETHERNET_CONNECTED =0;
+        vTaskDelay(1500 / portTICK_PERIOD_MS);
+
+        start_connect_ethernet();
+
         break;
     case ETHERNET_EVENT_START:
         ESP_LOGI(TAG, "Ethernet Started");
